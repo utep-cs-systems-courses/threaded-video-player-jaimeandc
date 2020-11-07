@@ -1,67 +1,70 @@
 #! /usr/bin/env python3
-from threading import Thread, Semaphore
+from threading import Thread, Semaphore, Lock
 import cv2, time
 
-semaphore = Semaphore(2)
-queue1 = []
-queue2 = []
-
+class produceConsumeQueue():
+    def __init__(self, queueCapacity):
+        self.queue = []
+        self.fullCount = Semaphore(0)
+        self.emptyCount = Semaphore(24)
+        self.lock = Lock()
+        self.queueCapacity = queueCapacity
+    def putFrame(self, frame):
+        self.emptyCount.acquire()
+        self.lock.acquire()
+        self.queue.append(frame)
+        self.lock.release()
+        self.fullCount.release()
+        return
+    def getFrame(self):
+        self.fullCount.acquire()
+        self.lock.acquire()
+        frame = self.queue.pop(0)
+        self.lock.release()
+        self.emptyCount.release()
+        return frame
+    
 class ExtractFrames(Thread):
     def __init__(self):
         Thread.__init__(self)
         self.videoCapture = cv2.VideoCapture('clip.mp4')
         self.totalFrames = int(self.videoCapture.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.queueCapacity = 50
         self.count = 0
 
     def run(self):
-        global queue1
-        global semaphore
+        global frameQueue
         success, image = self.videoCapture.read()
 
         while True:
-            if success and len(queue1) <= self.queueCapacity:
-                semaphore.acquire()
-                queue1.append(image)
-                semaphore.release()
-
+            if success and len(frameQueue.queue) <= frameQueue.queueCapacity:
+                frameQueue.putFrame(image)
                 success,image = self.videoCapture.read()
                 print(f'Reading frame {self.count}')
                 self.count += 1
 
             if self.count == self.totalFrames:
-                semaphore.acquire()
-                queue1.append(-1)
-                semaphore.release()
+                frameQueue.putFrame(-1)
                 break
         return
 class ConverttoGrayScale(Thread):
     def __init__(self):
         Thread.__init__(self)
-        self.queueCapacity = 50
         self.count = 0
 
     def run(self):
-        global queue1
-        global queue2
-        global semaphore
+        global frameQueue
+        global grayScaleQueue
 
         while True:
-            if queue1 and len(queue2) <= self.queueCapacity:
-                semaphore.acquire()
-                frame = queue1.pop(0)
-                semaphore.release()
+            if frameQueue.queue and len(grayScaleQueue.queue) <= grayScaleQueue.queueCapacity:
+                frame = frameQueue.getFrame()
 
                 if type(frame) == int and frame == -1:
-                    semaphore.acquire()
-                    queue2.append(-1)
-                    semaphore.release()
+                    grayScaleQueue.insertFrame(-1)
                     break
                 print(f'Converting Frame {self.count}')
                 grayscaleFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                semaphore.acquire()
-                queue2.append(grayscaleFrame)
-                semaphore.release()
+                grayScaleQueue.putFrame(grayscaleFrame)
                 self.count += 1
         return
 
@@ -72,17 +75,15 @@ class DisplayFrames(Thread):
         self.count = 0
 
     def run(self):
-        global queue2
-        global semaphore
+        global grayScaleQueue
 
         while True:
-            if queue2:
-                semaphore.acquire()
-                frame = queue2.pop(0)
-                semaphore.release()
+            if grayScaleQueue.queue:
+                frame = grayScaleQueue.getFrame()
 
                 if type(frame) == int and frame == -1:
                     break
+                
                 print(f'Displaying Frame{self.count}')
                 cv2.imshow('Video', frame)
                 self.count += 1
@@ -92,6 +93,9 @@ class DisplayFrames(Thread):
 
         cv2.destroyAllWindows()
         return
+
+frameQueue = produceConsumeQueue(9)
+grayScaleQueue = produceConsumeQueue(9)
 
 extractFrames = ExtractFrames()
 extractFrames.start()
